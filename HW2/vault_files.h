@@ -3,11 +3,12 @@
 
 #include "vault_catalog.h"
 
-int addVaultFile(char* vaultFileName, char* filePath);
+int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalog);
 
-int rmVaultFile(char* vaultFileName, char* fileName);
+int rmVaultFile(char* fileName, int vaultFd, Catalog catalog, int* updateCatalog);
 
-int fetchVaultFile(char* vaultFileName, char* fileName);
+int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog);
 
+int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCatalog);
 
 #endif /* VAULT_FILES_H_ */

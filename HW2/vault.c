@@ -15,80 +15,100 @@
 #include "vault_consts.h"
 
 
-
-
-
 int main (int argc, char** argv) {
 	Catalog catalog = NULL;
-	int res;
+	int res = -1;
+	char cmnd[10];
+
+	/*** timing code from moodle ***/
+	struct timeval start_time, end_time;
+	long seconds, useconds;
+	double mtime;
+	gettimeofday(&start_time, NULL);
+	/*** timing code end ***/
 
 	if (argc < 3) {
 		printf(ARG_NUM_ERR);
 		printf(USAGE_ERR);
-		return -1;
 	}
 
 	// command to lowercase
-	char cmnd[10];
-	if (parseCmnd(argv[2], cmnd, sizeof(cmnd)) == -1) {
+	else if (parseCmnd(argv[2], cmnd, sizeof(cmnd)) == -1)
 		printf(INVALID_CMND_ERR);
-		return -1;
-	}
 
 	/*** INIT VAULT ***/
-	if (streq(cmnd,INIT_CMND)) {
+	else if (streq(cmnd,INIT_CMND)) {
 		// validate arguments
-		if (argc < 4) {
+		if (argc < 4)
 			printf(INIT_SIZE_ERR);
-			return -1;
-		}
 
-		// parse size
-		ssize_t vaultSize = parseSize(argv[3]);
-		if (vaultSize <= 0) {
-			printf(INIT_SIZE_ERR);
-			return -1;
-		}
+		else {
+			// parse size
+			ssize_t vaultSize = parseSize(argv[3]);
+			if (vaultSize <= 0)
+				printf(INIT_SIZE_ERR);
 
-		return initVault(argv[1], vaultSize);
+			// run init
+			else
+				res = initVault(argv[1], vaultSize);
+		}
 	}
 
-	/*** LIST VAULT ***/
-	else if (streq(cmnd,LIST_CMND)) {
-		return listVault(argv[1]);
-	}
+	else if (streq(cmnd,LIST_CMND) || streq(cmnd,ADD_CMND) ||
+			 streq(cmnd,RM_CMND) || streq(cmnd,FETCH_CMND) ||
+			 streq(cmnd,DEFRAG_CMND) || streq(cmnd,STATUS_CMND)) {
 
-	/*** MANIPULATE VAULT FILES ***/
-	else if (streq(cmnd,ADD_CMND) || streq(cmnd,RM_CMND) || streq(cmnd,FETCH_CMND)) {
-		// validate arguments
-		if (argc < 4) {
-			printf(NO_FILENAME_ERR);
-			return -1;
+		// open vault
+		Catalog catalog = NULL;
+		int vaultFd;
+		int updateCatalog = 0;
+		catalog = openVault(argv[1], &vaultFd);
+		if (catalog == NULL)
+			res = -1;
+
+		/*** LIST VAULT ***/
+		else if (streq(cmnd,LIST_CMND))
+			res = listVault(catalog);
+
+		/*** MANIPULATE VAULT FILES ***/
+		else if (streq(cmnd,ADD_CMND) || streq(cmnd,RM_CMND) || streq(cmnd,FETCH_CMND)) {
+			// validate arguments
+			if (argc < 4)
+				printf(NO_FILENAME_ERR);
+
+			// run command
+			else if (streq(cmnd,ADD_CMND))
+				res = addVaultFile(argv[3], vaultFd, catalog, &updateCatalog);
+			else if (streq(cmnd,RM_CMND))
+				res = rmVaultFile(argv[3], vaultFd, catalog, &updateCatalog);
+			else if (streq(cmnd,FETCH_CMND))
+				res = fetchVaultFile(argv[3], vaultFd, catalog);
 		}
 
-		// run command
-		if (streq(cmnd,ADD_CMND))
-			res = addVaultFile(argv[1], argv[3]);
-		else if (streq(cmnd,RM_CMND))
-			res = rmVaultFile(argv[1], argv[3]);
-		else if (streq(cmnd,FETCH_CMND))
-			res = fetchVaultFile(argv[1], argv[3]);
+		/*** DEFRAG VAULT ***/
+		else if (streq(cmnd,DEFRAG_CMND))
+			res = defragVault(argv[1], vaultFd, catalog, &updateCatalog);
 
-		return res;
+		/*** GET VAULT STATUS ***/
+		else if (streq(cmnd,STATUS_CMND))
+			res = getVaultStatus(catalog);
+
+		// close vault
+		if (closeVault(vaultFd, catalog, updateCatalog) == -1)
+			res = -1;
+	}
+	else {
+		printf(INVALID_CMND_ERR);
 	}
 
-	/*** DEFRAG VAULT ***/
-	//TODO
-	/*else if (streq(cmnd,DEFRAG_CMND)) {
-		if (loadVault(argv[1], &catalog) == -1) return -1;
-	}*/
 
-	/*** GET VAULT STATS ***/
-	//TODO
-	/*else if (streq(cmnd,STATUS_CMND)) {
-		if (loadVault(argv[1], &catalog) == -1) return -1;
-	}*/
-	// TODO: timings
-	printf(INVALID_CMND_ERR);
-	return -1;
+	/*** timing code from moodle ***/
+	gettimeofday(&end_time, NULL);
+	seconds  = end_time.tv_sec  - start_time.tv_sec;
+	useconds = end_time.tv_usec - start_time.tv_usec;
+	mtime = ((seconds) * 1000 + useconds/1000.0);
+	printf("Elapsed time: %.3f milliseconds\n", mtime);
+	/*** timing code end ***/
+
+	return res;
 }

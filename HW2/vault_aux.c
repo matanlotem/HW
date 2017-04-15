@@ -43,7 +43,6 @@ ssize_t parseSize(char* sizeStr) {
 }
 
 int formatSize(char* sizeStr, ssize_t psize) {
-
 	if (psize < 1024) {
 		sprintf(sizeStr,"%d",psize);
 		strcat(sizeStr, "B");
@@ -84,6 +83,7 @@ int parseCmnd(char* cmndArg, char* cmnd, ssize_t cmndSize) {
 		else
 			cmnd[i] = cmndArg[i];
 	cmnd[strlen(cmndArg)] = '\0';
+
 	return 0;
 }
 

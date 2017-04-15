@@ -133,14 +133,7 @@ int closeVault(int vaultFd, Catalog catalog, int updateCatalog) {
 }
 
 
-int listVault(char* vaultFileName) {
-	// open vault
-	Catalog catalog = NULL;
-	int vaultFd;
-	catalog = openVault(vaultFileName, &vaultFd);
-	if (catalog == NULL)
-		return -1;
-
+int listVault(Catalog catalog) {
 	// get length of longest file name
 	int fnameLen = 0;
 	for (int i=0; i<catalog->numFiles; i++)
@@ -156,9 +149,27 @@ int listVault(char* vaultFileName) {
 				catalog->fat[i].filePerm & 0777, dateStr);
 	}
 
-	closeVault(vaultFd, catalog, 0);
 	return 0;
 
+}
+
+int getVaultStatus(Catalog catalog) {
+	// calculate status
+	ssize_t totalSize = 0;
+	double fragRatio = 0;
+	if (catalog->numBlocks > 0) {
+		for (int blockId=0; blockId < catalog->numBlocks; blockId++)
+			totalSize += catalog->blocks[blockId].blockSize;
+
+		fragRatio = ((double) totalSize) / (catalog->blocks[catalog->numBlocks-1].blockOffset +
+				catalog->blocks[catalog->numBlocks-1].blockSize - catalog->blocks[0].blockOffset);
+	}
+
+	// output status
+	printf(NUM_FILES_MSG, catalog->numFiles);
+	printf(TOTAL_SIZE_MSG, totalSize);
+	printf(FRAG_RATIO_MSG, fragRatio);
+	return 0;
 }
 
 int getFATEntryId(char* fileName, Catalog catalog) {

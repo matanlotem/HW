@@ -41,7 +41,9 @@ Catalog openVault(char* vaultFileName, int *vaultFd);
 
 int closeVault(int vaultFd, Catalog catalog, int updateCatalog);
 
-int listVault(char* vaultFileName);
+int listVault(Catalog catalog);
+
+int getVaultStatus(Catalog catalog);
 
 int getFATEntryId(char* fileName, Catalog catalog);
 

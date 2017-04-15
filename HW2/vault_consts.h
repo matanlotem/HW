@@ -44,25 +44,28 @@
 #define VAULT_SEEK_ERR "Error moving to requested vault offset: %s\n"
 
 // vault file manipulation errors
+#define MAX_FILE_ERR "Maximum number of files exceeded\n"
+#define CANNOT_FIT_ERR "Could not fit file in vault\n"
+#define FILE_STATS_ERR "Could not get file state: %s\n\n"
 #define SAME_FNAME_ERR "File with same name already in vault\n"
 #define MISSING_FNAME_ERR "File not in vault\n"
 #define SHORT_BLOCK_ERR "Block too small for delimiters\n"
 #define ADD_BLOCK_COPY_ERR "Error copying block from file to vault\n"
 #define WIPE_DELIM_ERR "Failed wiping delimiter: %s\n"
-#define DATA_CORRUPTION_ERR "Failed in the while adding or removing block. Catalog will be rolled back but vault data might have been corrupted.\n"
-
-
+#define DATA_CORRUPTION_ERR "Failed while manipulating blocks. Catalog will be rolled back but vault data might have been corrupted.\n"
+#define MOVE_BLOCK_COPY_ERR "Error moving block while defragmenting\n"
 #define FETCH_CREATE_ERR "Error creating fetched file: %s\n"
 #define FETCH_BLOCK_ERR "Error copying fetched file block\n"
 #define DEL_FETCH_FILE_ERR "Error removing file after failed fetch: %s\n"
-#define MAX_FILE_ERR "Maximum number of files exceeded\n"
-#define CANNOT_FIT_ERR "Could not fit file in vault\n"
-#define FILE_STATS_ERR "Could not get file state: %s\n\n"
 
 
-// success messages
+// messages
 #define ADD_SUCCESS_MSG "Result: %s inserted\n"
 #define FETCH_SUCCESS_MSG "Result: %s created\n"
 #define RM_SUCCESS_MSG "Result: %s deleted\n"
+#define DEFRAG_SUCCESS_MSG "Result: Defragmentation complete\n"
+#define NUM_FILES_MSG  "Number of files:       %d\n"
+#define TOTAL_SIZE_MSG "Total size:            %dB\n"
+#define FRAG_RATIO_MSG "Fragmentation ratio:   %f\n"
 
 #endif /* VAULT_CONSTS_H_ */

@@ -114,18 +114,14 @@ int writeBlock(int vaultFd, int fileFd, VaultBlock newBlock) {
 	return 0;
 }
 
-int addVaultFile(char* vaultFileName, char* filePath) {
-	// open vault
-	Catalog catalog = NULL;
-	int vaultFd;
-	catalog = openVault(vaultFileName, &vaultFd);
-	if (catalog == NULL)
-		return -1;
+int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalog) {
+	// TODO: add in order
+	// set for rollback
+	*updateCatalog = 0;
 
 	// check max files
 	if (catalog->numFiles == MAX_VAULT_FILES) {
 		printf(MAX_FILE_ERR);
-		closeVault(vaultFd, catalog, 0);
 		return -1;
 	}
 
@@ -137,7 +133,6 @@ int addVaultFile(char* vaultFileName, char* filePath) {
 	// check if file with same name already exists in vault
 	if (getFATEntryId(fileName, catalog) >= 0) {
 		printf(SAME_FNAME_ERR);
-		closeVault(vaultFd, catalog, 0);
 		return -1;
 	}
 
@@ -145,22 +140,22 @@ int addVaultFile(char* vaultFileName, char* filePath) {
 	struct stat fileStats;
 	if (stat(filePath,&fileStats) == -1) {
 		printf(FILE_STATS_ERR, strerror(errno));
-		closeVault(vaultFd, catalog, 0);
 		return -1;
 	}
 
 	// add file to fat
 	short fatEntryId = catalog->numFiles++;
-	strcpy(catalog->fat[fatEntryId].fileName,fileName);
-	catalog->fat[fatEntryId].filePerm = fileStats.st_mode;
-	catalog->fat[fatEntryId].fileSize = fileStats.st_size;
+	FATEntry *fatEntry = &(catalog->fat[fatEntryId]);
+	strcpy(fatEntry->fileName,fileName);
+	fatEntry->filePerm = fileStats.st_mode;
+	fatEntry->fileSize = fileStats.st_size;
 	struct timeval insertionTime;
 	gettimeofday(&insertionTime,NULL);
-	catalog->fat[fatEntryId].insertionTime = insertionTime.tv_sec;
+	fatEntry->insertionTime = insertionTime.tv_sec;
 	catalog->modificationTime = insertionTime.tv_sec;
 
 	// add blocks
-	ssize_t writeSize = catalog->fat[fatEntryId].fileSize;
+	ssize_t writeSize = fatEntry->fileSize;
 	ssize_t delimPadding = strlen(DELIM_START) + strlen(DELIM_END);
 	short blockNum = 0, gapBlockId =-1;
 	while (writeSize > 0 && blockNum < VAULT_BLOCK_NUM) {
@@ -180,7 +175,6 @@ int addVaultFile(char* vaultFileName, char* filePath) {
 	// file does not fit in vault
 	if (writeSize > 0) {
 		printf(CANNOT_FIT_ERR);
-		closeVault(vaultFd, catalog, 0);
 		return -1;
 	}
 
@@ -190,25 +184,23 @@ int addVaultFile(char* vaultFileName, char* filePath) {
 	fileFd = open(filePath, O_RDONLY);
 	if (fileFd == -1) {
 		printf(FILE_OPEN_ERR, strerror(errno));
-		closeVault(vaultFd, catalog, 0);
 		return -1;
 	}
 	// write data
 	blockNum = 0;
 	while (blockNum < VAULT_BLOCK_NUM) {
-		if (catalog->fat[fatEntryId].blockId[blockNum] != -1) { // check block is not empty
-			VaultBlock newBlock = catalog->blocks[catalog->fat[fatEntryId].blockId[blockNum]];
+		if (fatEntry->blockId[blockNum] != -1) { // check block is not empty
+			VaultBlock newBlock = catalog->blocks[fatEntry->blockId[blockNum]];
 			if (writeBlock(vaultFd, fileFd, newBlock) == -1) {
 				// error writing block
 				close(fileFd);
 				// wipe blocks to prevent data corruption
 				for (int i=blockNum; i>=0; i--) {
-					newBlock = catalog->blocks[catalog->fat[fatEntryId].blockId[i]];
+					newBlock = catalog->blocks[fatEntry->blockId[i]];
 					if (wipeDelim(newBlock.blockOffset, newBlock.blockSize, vaultFd) == -1)
 						// failed wiping some of the blocks
 						printf(DATA_CORRUPTION_ERR);
 				}
-				closeVault(vaultFd, catalog, 0);
 				return -1;
 			}
 		blockNum++;
@@ -218,7 +210,7 @@ int addVaultFile(char* vaultFileName, char* filePath) {
 	}
 
 	close(fileFd);
-	closeVault(vaultFd, catalog, 1);
+	*updateCatalog = 1;
 	printf(ADD_SUCCESS_MSG, fileName);
 	return 0;
 }
@@ -234,13 +226,10 @@ int addVaultFile(char* vaultFileName, char* filePath) {
  * Try to wipe delimiters (if fails then vault might be corrupted)
  *
  */
-int rmBlock(short fatEntryId, short blockNum, int vaultFd, Catalog catalog) {
-	short blockId = catalog->fat[fatEntryId].blockId[blockNum];
+int rmBlock(short blockId, int vaultFd, Catalog catalog) {
 	if (blockId == -1) // block not used
 		return 0;
-
-	short blockOffset = catalog->blocks[blockId].blockOffset;
-	short blockSize = catalog->blocks[blockId].blockSize;
+	VaultBlock vaultBlock = catalog->blocks[blockId];
 
 	// update catalog
 	for (int i=blockId; i<catalog->numBlocks-1; i++) { // shift blocks left
@@ -248,36 +237,31 @@ int rmBlock(short fatEntryId, short blockNum, int vaultFd, Catalog catalog) {
 		catalog->fat[catalog->blocks[i].fatEntryId].blockId[catalog->blocks[i].blockNum] = i;
 	}
 	// delete last block
+	catalog->fat[vaultBlock.fatEntryId].blockId[vaultBlock.blockNum] = -1;
 	catalog->blocks[catalog->numBlocks-1].fatEntryId = -1;
-	catalog->fat[fatEntryId].blockId[blockNum] = -1;
 	catalog->numBlocks --;
 
 	// wipe delimiters
-	return wipeDelim(blockOffset, blockSize, vaultFd);
+	return wipeDelim(vaultBlock.blockOffset, vaultBlock.blockSize, vaultFd);
 }
 
-int rmVaultFile(char* vaultFileName, char* fileName) {
-	// open vault
-	Catalog catalog = NULL;
-	int vaultFd;
-	catalog = openVault(vaultFileName, &vaultFd);
-	if (catalog == NULL)
-		return -1;
+int rmVaultFile(char* fileName, int vaultFd, Catalog catalog, int* updateCatalog) {
+	// set for rollback
+	*updateCatalog = 0;
 
 	// check if exists
 	int fatEntryId = getFATEntryId(fileName, catalog);
 	if (fatEntryId < 0) {
 		printf(MISSING_FNAME_ERR);
-		closeVault(vaultFd, catalog, 0);
 		return -1;
 	}
 
 	// delete blocks
 	for (int blockNum = 0; blockNum < VAULT_BLOCK_NUM; blockNum++) {
-		if(rmBlock(fatEntryId, blockNum, vaultFd, catalog) == -1) {
+		if(rmBlock(catalog->fat[fatEntryId].blockId[blockNum], vaultFd, catalog) == -1) {
 			// failed removing block - cannot be fixed
 			printf(DATA_CORRUPTION_ERR);
-			closeVault(vaultFd, catalog, 0);
+			return -1;
 		}
 	}
 
@@ -294,7 +278,8 @@ int rmVaultFile(char* vaultFileName, char* fileName) {
 		catalog->fat[catalog->numFiles-1].blockId[j] = -1;
 	catalog->numFiles --;
 
-	closeVault(vaultFd, catalog, 1);
+	*updateCatalog = 1;
+	// TODO: move to main
 	printf(RM_SUCCESS_MSG, fileName);
 	return 0;
 }
@@ -302,30 +287,21 @@ int rmVaultFile(char* vaultFileName, char* fileName) {
 /* ********** ********** ********** ********** ********** ********** ********** */
 /* ********** ********** **********   FETCH    ********** ********** ********** */
 /* ********** ********** ********** ********** ********** ********** ********** */
-int readBlock(short fatEntryId, short blockNum, int fileFd, int vaultFd, Catalog catalog) {
-	short blockId = catalog->fat[fatEntryId].blockId[blockNum];
+int readBlock(short blockId, int fileFd, int vaultFd, Catalog catalog) {
 	if (blockId == -1) // block not used
 		return 0;
+	VaultBlock vaultBlock = catalog->blocks[blockId];
 
-	short blockOffset = catalog->blocks[blockId].blockOffset;
-	short blockSize = catalog->blocks[blockId].blockSize;
-
-	if (lseek(vaultFd, blockOffset + strlen(DELIM_START), SEEK_SET) == -1) {
+	if (lseek(vaultFd, vaultBlock.blockOffset + strlen(DELIM_START), SEEK_SET) == -1) {
 		printf(VAULT_SEEK_ERR, strerror(errno));
 		return -1;
 	}
 
 	// copy block to file
-	return copyData(vaultFd, fileFd, blockSize - strlen(DELIM_START) - strlen(DELIM_END));
+	return copyData(vaultFd, fileFd, vaultBlock.blockSize - strlen(DELIM_START) - strlen(DELIM_END));
 }
 
-int fetchVaultFile(char* vaultFileName, char* fileName) {
-	// open vault
-	Catalog catalog = NULL;
-	int vaultFd;
-	catalog = openVault(vaultFileName, &vaultFd);
-	if (catalog == NULL)
-		return -1;
+int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog) {
 
 	// check if filename exists
 	int fatEntryId = getFATEntryId(fileName, catalog);
@@ -340,25 +316,76 @@ int fetchVaultFile(char* vaultFileName, char* fileName) {
 	fileFd = open(fileName,O_WRONLY | O_CREAT | O_TRUNC, catalog->fat[fatEntryId].filePerm);
 	if (fileFd < 0) {
 		printf(FETCH_CREATE_ERR, strerror(errno));
-		closeVault(vaultFd, catalog, 0);
 		return -1;
 	}
 
 	// copy data from blocks to file
 	for (int blockNum = 0; blockNum < VAULT_BLOCK_NUM; blockNum++) {
-		if(readBlock(fatEntryId, blockNum, fileFd, vaultFd, catalog) == -1) {
+		if(readBlock(catalog->fat[fatEntryId].blockId[blockNum], fileFd, vaultFd, catalog) == -1) {
 			// failed copying block
 			printf(FETCH_BLOCK_ERR);
 			close(fileFd);
 			if (unlink(fileName) == -1) // delete file
 				printf(DEL_FETCH_FILE_ERR, strerror(errno));
-			closeVault(vaultFd, catalog, 0);
 			return -1;
 		}
 	}
 
 	close(fileFd);
-	closeVault(vaultFd, catalog, 0);
 	printf(FETCH_SUCCESS_MSG, fileName);
 	return 0;
+}
+
+/* ********** ********** ********** ********** ********** ********** ********** */
+/* ********** ********** **********   DEFRAG   ********** ********** ********** */
+/* ********** ********** ********** ********** ********** ********** ********** */
+
+int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCatalog) {
+	// set for rollback
+	*updateCatalog = 0;
+	int res = 0;
+
+	// open vault read-only
+	int vaultReadFd = -1;
+	vaultReadFd = open(vaultFileName, O_RDONLY);
+	if (vaultReadFd == -1) {
+		printf(VAULT_OPEN_ERR, strerror(errno));
+		return -1;
+	}
+
+	VaultBlock *vaultBlock = NULL;
+	off_t prevEndOffset = sizeof(*catalog); // first offset - from just after catalog
+	for (int blockId=0; blockId < catalog->numBlocks; blockId++) {
+		vaultBlock = &(catalog->blocks[blockId]);
+
+		// close gap
+		if (vaultBlock->blockOffset - prevEndOffset > 0) {
+			//move block
+			if ((lseek(vaultFd, prevEndOffset, SEEK_SET) == -1) ||
+				(lseek(vaultReadFd, vaultBlock->blockOffset, SEEK_SET) == -1)) {
+				printf(VAULT_SEEK_ERR, strerror(errno));
+				res = -1;
+			}
+			else if (copyData(vaultReadFd, vaultFd, vaultBlock->blockSize) == -1) {
+				printf(MOVE_BLOCK_COPY_ERR);
+				res = -1;
+			}
+
+			// error moving block
+			if (res == -1) {
+				printf(DATA_CORRUPTION_ERR);
+				close(vaultReadFd);
+				return -1;
+			}
+
+			//fix catalog
+			vaultBlock->blockOffset = prevEndOffset;
+		}
+
+		prevEndOffset += vaultBlock->blockSize;
+	}
+
+	*updateCatalog = 1;
+	printf(DEFRAG_SUCCESS_MSG);
+	return res;
 }
