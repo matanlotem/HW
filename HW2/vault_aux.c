@@ -1,9 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <errno.h>
-#include <unistd.h>
-#include <string.h>
 
 #include "vault_aux.h"
 #include "vault_consts.h"
@@ -27,7 +27,6 @@ ssize_t parseSize(char* sizeStr) {
     // get units
     switch (sizeStr[strlen(sizeStr)-1]) {
         case 'G':
-        	// TODO: validate no overflow
             psize *= 1024;
         case 'M':
             psize *= 1024;
@@ -43,48 +42,30 @@ ssize_t parseSize(char* sizeStr) {
 }
 
 int formatSize(char* sizeStr, ssize_t psize) {
-	if (psize < 1024) {
-		sprintf(sizeStr,"%d",psize);
-		strcat(sizeStr, "B");
-		return 0;
+	// convert units
+	char units[5] = "BKMG";
+	int unitNum = 0;
+	double tmpSize = psize;
+	while (tmpSize > 1024 && unitNum < 3) {
+		tmpSize /= 1024;
+		unitNum++;
 	}
 
-	psize /= 1024;
-	if (psize < 1024) {
-		sprintf(sizeStr,"%d",psize);
-		strcat(sizeStr, "K");
-		return 0;
-	}
+	// round up (ceil)
+	psize = (ssize_t) tmpSize;
+	if (tmpSize - psize > 0)
+		psize++;
 
-	psize /= 1024;
-	if (psize < 1024) {
-		sprintf(sizeStr,"%d",psize);
-		strcat(sizeStr, "M");
-		return 0;
-	}
-
-	psize /= 1024;
-	if (psize < 1024) {
-		sprintf(sizeStr,"%d",psize);
-		strcat(sizeStr, "G");
-		return 0;
-	}
-
-	return -1;
+	// format
+	sprintf(sizeStr,"%d%c",psize, units[unitNum]);
+	return 0;
 }
 
-int parseCmnd(char* cmndArg, char* cmnd, ssize_t cmndSize) {
-	if (strlen(cmndArg) > cmndSize-1)
-		return -1;
-
-	for (int i=0; i< (int) strlen(cmndArg); i++)
-		if (cmndArg[i] >= 'A' && cmndArg[i] <= 'Z')
-			cmnd[i] = cmndArg[i] - 'A' + 'a';
-		else
-			cmnd[i] = cmndArg[i];
-	cmnd[strlen(cmndArg)] = '\0';
-
-	return 0;
+void strToLower(char* str) {
+	if (str != NULL)
+		for (int i=0; i< (int) strlen(str); i++)
+			if (str[i] >= 'A' && str[i] <= 'Z')
+				str[i] = str[i] - 'A' + 'a';
 }
 
 /*

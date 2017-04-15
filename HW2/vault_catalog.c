@@ -1,30 +1,35 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <errno.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <malloc.h>
 #include <unistd.h>
+#include <sys/types.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/time.h>
 #include <time.h>
 
-
 #include "vault_catalog.h"
-#include "vault_aux.h"
 #include "vault_consts.h"
-
-
+#include "vault_aux.h"
 
 int initVault(char* vaultFileName, ssize_t vaultSize) {
-	int res = -1;
+	int res = 0;
 	// create catalog
 	Catalog catalog = NULL;
+	// validate vault is large enough
+	if (sizeof(*catalog) > vaultSize) {
+		printf(VAULT_SIZE_ERR);
+		return -1;
+	}
+	// allocate catalog
 	catalog = (Catalog) malloc(sizeof(*catalog));
 	if (catalog == NULL) {
 		printf(ALLOC_ERR);
 		return -1;
 	}
+
+	// initialize vault attributes
 	catalog->vaultSize = vaultSize;
 	catalog->numFiles = 0;
 	catalog->numBlocks = 0;
@@ -45,34 +50,29 @@ int initVault(char* vaultFileName, ssize_t vaultSize) {
 
 	// create vault file
 	int vaultFd = -1;
-	//TODO: set permissions
-	//TODO: check vault file size is not too small
-	vaultFd = open(vaultFileName,O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+	vaultFd = open(vaultFileName,O_WRONLY | O_CREAT | O_TRUNC, 0777);
 	if (vaultFd < 0) {
 		printf(VAULT_CREATION_ERR, strerror(errno));
-		goto INIT_END;
+		res = -1;
 	}
 
 	// write catalog to file
-	if (write(vaultFd,catalog, sizeof(*catalog)) != sizeof(*catalog)) {
+	else if (write(vaultFd,catalog, sizeof(*catalog)) != sizeof(*catalog)) {
 		printf(CATALOG_WRITE_ERR, strerror(errno));
-		goto INIT_END;
+		res = -1;
 	}
 
 	// strech file
-	if (lseek(vaultFd, vaultSize-1, SEEK_SET) == -1) {
+	else if (lseek(vaultFd, vaultSize-1, SEEK_SET) == -1 ||
+		write(vaultFd, "", 1) < 0) {
 		printf(VAULT_STRECH_ERR, strerror(errno));
-		goto INIT_END;
-	}
-	if (write(vaultFd, "", 1) < 0) {
-		printf(CATALOG_WRITE_ERR, strerror(errno));
-		goto INIT_END;
+		res = -1;
 	}
 
-	res = 0;
-	INIT_END:
 	if (vaultFd >=0) close(vaultFd);
 	free(catalog);
+	if (res != -1)
+		printf(INIT_SUCCESS_MSG);
 	return res;
 }
 
@@ -150,7 +150,6 @@ int listVault(Catalog catalog) {
 	}
 
 	return 0;
-
 }
 
 int getVaultStatus(Catalog catalog) {
@@ -161,7 +160,7 @@ int getVaultStatus(Catalog catalog) {
 		for (int blockId=0; blockId < catalog->numBlocks; blockId++)
 			totalSize += catalog->blocks[blockId].blockSize;
 
-		fragRatio = ((double) totalSize) / (catalog->blocks[catalog->numBlocks-1].blockOffset +
+		fragRatio = 1 - ((double) totalSize) / (catalog->blocks[catalog->numBlocks-1].blockOffset +
 				catalog->blocks[catalog->numBlocks-1].blockSize - catalog->blocks[0].blockOffset);
 	}
 
@@ -169,6 +168,9 @@ int getVaultStatus(Catalog catalog) {
 	printf(NUM_FILES_MSG, catalog->numFiles);
 	printf(TOTAL_SIZE_MSG, totalSize);
 	printf(FRAG_RATIO_MSG, fragRatio);
+	//printFAT(catalog);
+	//printBlocks(catalog);
+
 	return 0;
 }
 
@@ -177,4 +179,28 @@ int getFATEntryId(char* fileName, Catalog catalog) {
 		if (streq(fileName,catalog->fat[i].fileName))
 			return i;
 	return -1;
+}
+
+/*** DEBUG PRINT METHODS ***/
+void printVaultBlock(VaultBlock vaultBlock) {
+	printf("fat: %d (%d) \tsize: %d\toffset: %d\n", (int) vaultBlock.fatEntryId, vaultBlock.blockNum,
+			(int) vaultBlock.blockSize, (int) vaultBlock.blockOffset);
+}
+
+void printFATEntry(FATEntry fatEntry) {
+	printf("num: %s\tsize: %d\tperm: %.4o\n", fatEntry.fileName,
+			(int) fatEntry.fileSize, fatEntry.filePerm & 0777);
+}
+
+void printBlocks(Catalog catalog) {
+	printf("num blocks: %d\t\tstart\toffset: %d\n",catalog->numBlocks, sizeof(*catalog));
+	for (int i=0; i<catalog->numBlocks; i++)
+		printVaultBlock(catalog->blocks[i]);
+	printf("\t\t\tlast\toffset: %d\n",(int) catalog->vaultSize);
+}
+
+void printFAT(Catalog catalog) {
+	printf("num files: %d\n",catalog->numFiles);
+	for (int i=0; i<catalog->numFiles; i++)
+		printFATEntry(catalog->fat[i]);
 }

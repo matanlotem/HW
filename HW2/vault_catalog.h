@@ -47,5 +47,9 @@ int getVaultStatus(Catalog catalog);
 
 int getFATEntryId(char* fileName, Catalog catalog);
 
+void printVaultBlock(VaultBlock vaultBlock);
+void printFATEntry(FATEntry fatEntry);
+void printBlocks(Catalog catalog);
+void printFAT(Catalog catalog);
 
 #endif /* VAULT_CATALOG_H_ */

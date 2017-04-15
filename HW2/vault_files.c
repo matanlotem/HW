@@ -1,11 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <errno.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/time.h>
 
 #include "vault_files.h"
@@ -13,17 +13,46 @@
 #include "vault_consts.h"
 #include "vault_aux.h"
 
+
+int writeAtOffset(char* data, off_t offset, int vaultFd) {
+	if (lseek(vaultFd, offset, SEEK_SET) == -1) {
+		printf(VAULT_SEEK_ERR, strerror(errno));
+		return -1;
+	}
+	if (write(vaultFd, data, strlen(data)) != strlen(data)) {
+		printf(VAULT_FWRITE_ERR, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+int addDelim(off_t blockOffset, ssize_t blockSize, int vaultFd) {
+	// validate block is not too small for both delimiters
+	if (blockSize < strlen(DELIM_START) + strlen(DELIM_END)) {
+		printf(SHORT_BLOCK_ERR);
+		return -1;
+	}
+
+	if ((writeAtOffset(DELIM_START, blockOffset, vaultFd) == -1) ||
+		(writeAtOffset(DELIM_END, blockOffset + blockSize - strlen(DELIM_END), vaultFd) == -1)) {
+		printf(ADD_DELIM_ERR);
+		return -1;
+	}
+	return 0;
+}
+
 int wipeDelim(off_t blockOffset, ssize_t blockSize, int vaultFd) {
-	// TODO: validate block is not too small
-	// try wiping delimiters to prevent data corruption (only for the tester)
-	if ((lseek(vaultFd, blockOffset, SEEK_SET) == -1) || // wipe start delimiter
-		(write(vaultFd, DELIM_WIPE, strlen(DELIM_WIPE)) != strlen(DELIM_WIPE)) ||
-		(lseek(vaultFd, blockOffset + blockSize - strlen(DELIM_WIPE), SEEK_SET) == -1) || // wipe end delimiter
-		(write(vaultFd, DELIM_WIPE, strlen(DELIM_WIPE)) != strlen(DELIM_WIPE))) {
-		// data might have been corrupted
+	// validate block is not too small - prevent overflows
+	if (blockSize < strlen(DELIM_WIPE))
+		return 0;
+
+	// wipe delimiters
+	if ((writeAtOffset(DELIM_WIPE, blockOffset, vaultFd) == -1) ||
+		(writeAtOffset(DELIM_WIPE, blockOffset + blockSize - strlen(DELIM_WIPE), vaultFd) == -1)) {
 		printf(WIPE_DELIM_ERR, strerror(errno));
 		return -1;
 	}
+
 	return 0;
 }
 
@@ -50,7 +79,7 @@ short findGap(VaultBlock *newBlock, ssize_t writeSize, Catalog catalog) {
 
 		// check if current gap is better
 		if ((newBlock->blockSize < writeSize && gapSize > newBlock->blockSize) ||
-			(newBlock->blockSize > writeSize && gapSize < newBlock->blockSize && newBlock->blockSize >= writeSize)) {
+			(newBlock->blockSize > writeSize && gapSize < newBlock->blockSize && gapSize >= writeSize)) {
 			gapBlockId = blockId;
 			newBlock->blockSize = gapSize;
 			newBlock->blockOffset = prevEndOffset;
@@ -67,7 +96,7 @@ void logBlockToGap(VaultBlock newBlock, short gapBlockId, ssize_t writeSize, Cat
 		newBlock.blockSize = writeSize;
 
 	// shift succeeding blocks right
-	for (int i=gapBlockId+1; i<catalog->numBlocks; i++) {
+	for (int i=catalog->numBlocks; i > gapBlockId; i--) {
 		catalog->blocks[i] = catalog->blocks[i-1];
 		catalog->fat[catalog->blocks[i].fatEntryId].blockId[catalog->blocks[i].blockNum] = i;
 	}
@@ -84,38 +113,24 @@ int writeBlock(int vaultFd, int fileFd, VaultBlock newBlock) {
 		return -1;
 	}
 
-	// set position to start of block
-	if (lseek(vaultFd, newBlock.blockOffset, SEEK_SET) == -1) {
+	// set position to start of block (+start delimiter
+	if (lseek(vaultFd, newBlock.blockOffset + strlen(DELIM_START), SEEK_SET) == -1) {
 		printf(VAULT_SEEK_ERR, strerror(errno));
 		return -1;
 	}
 
 	ssize_t tmpSize;
-	// write start delimiter
-	tmpSize = write(vaultFd, DELIM_START, strlen(DELIM_START));
-	if (tmpSize != strlen(DELIM_START)) {
-		printf(VAULT_FWRITE_ERR, strerror(errno));
-		return -1;
-	}
-
 	// copy file to block
 	if (copyData(fileFd, vaultFd, newBlock.blockSize - strlen(DELIM_START) - strlen(DELIM_END)) == -1) {
 		printf(ADD_BLOCK_COPY_ERR);
 		return -1;
 	}
 
-	// write end delimiter
-	tmpSize = write(vaultFd, DELIM_END, strlen(DELIM_END));
-	if (tmpSize != strlen(DELIM_END)) {
-		printf(VAULT_FWRITE_ERR, strerror(errno));
-		return -1;
-	}
-
-	return 0;
+	// write delimiters
+	return addDelim(newBlock.blockOffset, newBlock.blockSize, vaultFd);
 }
 
-int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalog) {
-	// TODO: add in order
+int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalog, char* msg) {
 	// set for rollback
 	*updateCatalog = 0;
 
@@ -143,16 +158,32 @@ int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalo
 		return -1;
 	}
 
+	// find location to fit file alphabetically and shift entries to make room
+	short fatEntryId = 0;
+	while (fatEntryId < catalog->numFiles &&
+			strcmp(fileName, catalog->fat[fatEntryId].fileName) > 0)
+		fatEntryId++;
+	for (int i=catalog->numFiles; i > fatEntryId; i--) {
+		catalog->fat[i] = catalog->fat[i-1]; // shift entries right
+		// fix blocks->fat pointers
+		for (int j=0; j<VAULT_BLOCK_NUM; j++)
+			if (catalog->fat[i].blockId[j] != -1)
+				catalog->blocks[catalog->fat[i].blockId[j]].fatEntryId = i;
+	}
+	catalog->numFiles++;
+
 	// add file to fat
-	short fatEntryId = catalog->numFiles++;
 	FATEntry *fatEntry = &(catalog->fat[fatEntryId]);
 	strcpy(fatEntry->fileName,fileName);
 	fatEntry->filePerm = fileStats.st_mode;
 	fatEntry->fileSize = fileStats.st_size;
+	for (int j=0; j<VAULT_BLOCK_NUM; j++)
+		fatEntry->blockId[j] = -1;
 	struct timeval insertionTime;
 	gettimeofday(&insertionTime,NULL);
 	fatEntry->insertionTime = insertionTime.tv_sec;
 	catalog->modificationTime = insertionTime.tv_sec;
+
 
 	// add blocks
 	ssize_t writeSize = fatEntry->fileSize;
@@ -211,7 +242,7 @@ int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalo
 
 	close(fileFd);
 	*updateCatalog = 1;
-	printf(ADD_SUCCESS_MSG, fileName);
+	sprintf(msg,ADD_SUCCESS_MSG, fileName);
 	return 0;
 }
 
@@ -245,7 +276,7 @@ int rmBlock(short blockId, int vaultFd, Catalog catalog) {
 	return wipeDelim(vaultBlock.blockOffset, vaultBlock.blockSize, vaultFd);
 }
 
-int rmVaultFile(char* fileName, int vaultFd, Catalog catalog, int* updateCatalog) {
+int rmVaultFile(char* fileName, int vaultFd, Catalog catalog, int* updateCatalog, char* msg) {
 	// set for rollback
 	*updateCatalog = 0;
 
@@ -279,8 +310,7 @@ int rmVaultFile(char* fileName, int vaultFd, Catalog catalog, int* updateCatalog
 	catalog->numFiles --;
 
 	*updateCatalog = 1;
-	// TODO: move to main
-	printf(RM_SUCCESS_MSG, fileName);
+	sprintf(msg, RM_SUCCESS_MSG, fileName);
 	return 0;
 }
 
@@ -301,7 +331,7 @@ int readBlock(short blockId, int fileFd, int vaultFd, Catalog catalog) {
 	return copyData(vaultFd, fileFd, vaultBlock.blockSize - strlen(DELIM_START) - strlen(DELIM_END));
 }
 
-int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog) {
+int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog, char *msg) {
 
 	// check if filename exists
 	int fatEntryId = getFATEntryId(fileName, catalog);
@@ -332,7 +362,7 @@ int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog) {
 	}
 
 	close(fileFd);
-	printf(FETCH_SUCCESS_MSG, fileName);
+	sprintf(msg, FETCH_SUCCESS_MSG, fileName);
 	return 0;
 }
 
@@ -340,7 +370,7 @@ int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog) {
 /* ********** ********** **********   DEFRAG   ********** ********** ********** */
 /* ********** ********** ********** ********** ********** ********** ********** */
 
-int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCatalog) {
+int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCatalog, char* msg) {
 	// set for rollback
 	*updateCatalog = 0;
 	int res = 0;
@@ -360,14 +390,27 @@ int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCa
 
 		// close gap
 		if (vaultBlock->blockOffset - prevEndOffset > 0) {
-			//move block
-			if ((lseek(vaultFd, prevEndOffset, SEEK_SET) == -1) ||
+			// remove delimeters before move
+			if (wipeDelim(vaultBlock->blockOffset, vaultBlock->blockSize, vaultFd) == -1) {
+				printf(DEFRAG_DELIM_ERR);
+				res = -1;
+			}
+			// go to start of block
+			else if ((lseek(vaultFd, prevEndOffset, SEEK_SET) == -1) ||
 				(lseek(vaultReadFd, vaultBlock->blockOffset, SEEK_SET) == -1)) {
 				printf(VAULT_SEEK_ERR, strerror(errno));
 				res = -1;
 			}
+			// move block
 			else if (copyData(vaultReadFd, vaultFd, vaultBlock->blockSize) == -1) {
 				printf(MOVE_BLOCK_COPY_ERR);
+				res = -1;
+			}
+			// fix catalog
+			vaultBlock->blockOffset = prevEndOffset;
+			// return delimiters
+			if (res != -1 && addDelim(vaultBlock->blockOffset, vaultBlock->blockSize, vaultFd) == -1) {
+				printf(DEFRAG_DELIM_ERR);
 				res = -1;
 			}
 
@@ -378,14 +421,13 @@ int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCa
 				return -1;
 			}
 
-			//fix catalog
-			vaultBlock->blockOffset = prevEndOffset;
+
 		}
 
 		prevEndOffset += vaultBlock->blockSize;
 	}
 
 	*updateCatalog = 1;
-	printf(DEFRAG_SUCCESS_MSG);
+	sprintf(msg, DEFRAG_SUCCESS_MSG);
 	return res;
 }
