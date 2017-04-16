@@ -8,10 +8,20 @@
 #include "vault_aux.h"
 #include "vault_consts.h"
 
+/* Check if two strings are equal */
 int streq(char* str1, char* str2) {
 	return (strcmp(str1,str2) == 0);
 }
 
+/* Convert string to lowercase in place */
+void strToLower(char* str) {
+	if (str != NULL)
+		for (int i=0; i< (int) strlen(str); i++)
+			if (str[i] >= 'A' && str[i] <= 'Z')
+				str[i] = str[i] - 'A' + 'a';
+}
+
+/* Parse size string given in a format of integer followed by unit (B/K/M/G) */
 ssize_t parseSize(char* sizeStr) {
     if (strlen(sizeStr) < 2)
         return 0;
@@ -41,7 +51,8 @@ ssize_t parseSize(char* sizeStr) {
     return psize;
 }
 
-int formatSize(char* sizeStr, ssize_t psize) {
+/* Format size in bytes to integer followed by unit (B/K/M/G) */
+void formatSize(char* sizeStr, ssize_t psize) {
 	// convert units
 	char units[5] = "BKMG";
 	int unitNum = 0;
@@ -58,20 +69,9 @@ int formatSize(char* sizeStr, ssize_t psize) {
 
 	// format
 	sprintf(sizeStr,"%d%c",psize, units[unitNum]);
-	return 0;
 }
 
-void strToLower(char* str) {
-	if (str != NULL)
-		for (int i=0; i< (int) strlen(str); i++)
-			if (str[i] >= 'A' && str[i] <= 'Z')
-				str[i] = str[i] - 'A' + 'a';
-}
-
-/*
- * copies data from one file descriptor to another through a buffer
- * if fails, returns -1
- */
+/* Copies data from one file descriptor to another through a buffer */
 int copyData (int fromFd, int toFd, ssize_t dataSize) {
 	ssize_t writeSize = 0, bufferSize = BUFFER_SIZE, tmpSize;
 	char buffer[BUFFER_SIZE];

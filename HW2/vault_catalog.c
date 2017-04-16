@@ -13,6 +13,7 @@
 #include "vault_consts.h"
 #include "vault_aux.h"
 
+/* Initialize vault - creates a new vault of specified size */
 int initVault(char* vaultFileName, ssize_t vaultSize) {
 	int res = 0;
 	// create catalog
@@ -76,6 +77,7 @@ int initVault(char* vaultFileName, ssize_t vaultSize) {
 	return res;
 }
 
+/* Opens vault for for read-write and loads meta-data */
 Catalog openVault(char* vaultFileName, int *vaultFd) {
 	// open vault file
 	*vaultFd = -1;
@@ -108,7 +110,7 @@ Catalog openVault(char* vaultFileName, int *vaultFd) {
     return catalog;
 }
 
-
+/* Closes vault at end of invocation */
 int closeVault(int vaultFd, Catalog catalog, int updateCatalog) {
 	int res = 0;
 	if (updateCatalog) {
@@ -117,6 +119,7 @@ int closeVault(int vaultFd, Catalog catalog, int updateCatalog) {
 			res = -1;
 		}
 		else {
+			// write catalog to vault
 			if (lseek(vaultFd, 0, SEEK_SET) == -1) {
 				printf(VAULT_SEEK_ERR, strerror(errno));
 				res = -1;
@@ -132,7 +135,7 @@ int closeVault(int vaultFd, Catalog catalog, int updateCatalog) {
 	return res;
 }
 
-
+/* Outputs a list of the files in the vault */
 int listVault(Catalog catalog) {
 	// get length of longest file name
 	int fnameLen = 0;
@@ -152,14 +155,17 @@ int listVault(Catalog catalog) {
 	return 0;
 }
 
+/* Outputs vault status */
 int getVaultStatus(Catalog catalog) {
 	// calculate status
 	ssize_t totalSize = 0;
 	double fragRatio = 0;
 	if (catalog->numBlocks > 0) {
+		// calculate total size of all files (including delimiters)
 		for (int blockId=0; blockId < catalog->numBlocks; blockId++)
 			totalSize += catalog->blocks[blockId].blockSize;
 
+		// calculate fragmentation ratio
 		fragRatio = 1 - ((double) totalSize) / (catalog->blocks[catalog->numBlocks-1].blockOffset +
 				catalog->blocks[catalog->numBlocks-1].blockSize - catalog->blocks[0].blockOffset);
 	}
@@ -174,6 +180,7 @@ int getVaultStatus(Catalog catalog) {
 	return 0;
 }
 
+/* Get the index of the fat entry of a file by name */
 int getFATEntryId(char* fileName, Catalog catalog) {
 	for (int i=0; i<catalog->numFiles; i++)
 		if (streq(fileName,catalog->fat[i].fileName))
@@ -182,16 +189,20 @@ int getFATEntryId(char* fileName, Catalog catalog) {
 }
 
 /*** DEBUG PRINT METHODS ***/
+
+/* Print attributes of a specific vault block */
 void printVaultBlock(VaultBlock vaultBlock) {
 	printf("fat: %d (%d) \tsize: %d\toffset: %d\n", (int) vaultBlock.fatEntryId, vaultBlock.blockNum,
 			(int) vaultBlock.blockSize, (int) vaultBlock.blockOffset);
 }
 
+/* Print attributes of a specific fat entry */
 void printFATEntry(FATEntry fatEntry) {
-	printf("num: %s\tsize: %d\tperm: %.4o\n", fatEntry.fileName,
+	printf("name: %s\tsize: %d\tperm: %.4o\n", fatEntry.fileName,
 			(int) fatEntry.fileSize, fatEntry.filePerm & 0777);
 }
 
+/* Print list of all vault blocks using printVaultBlock */
 void printBlocks(Catalog catalog) {
 	printf("num blocks: %d\t\tstart\toffset: %d\n",catalog->numBlocks, sizeof(*catalog));
 	for (int i=0; i<catalog->numBlocks; i++)
@@ -199,6 +210,7 @@ void printBlocks(Catalog catalog) {
 	printf("\t\t\tlast\toffset: %d\n",(int) catalog->vaultSize);
 }
 
+/* Print list of all vault files (fat entries) using printFATEntry */
 void printFAT(Catalog catalog) {
 	printf("num files: %d\n",catalog->numFiles);
 	for (int i=0; i<catalog->numFiles; i++)

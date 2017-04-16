@@ -13,7 +13,15 @@
 #include "vault_consts.h"
 #include "vault_aux.h"
 
-
+/* Writes data to vault file at given offset
+ * Assumes data is a NULL terminated string
+ *
+ * @param data - a NULL terminated string to write to vault file
+ * @param offset - offset to write data
+ * @param vaultFd - file descriptor of vault file - must be open for read/write
+ *
+ * @return 0 for success, -1 for failure
+ */
 int writeAtOffset(char* data, off_t offset, int vaultFd) {
 	if (lseek(vaultFd, offset, SEEK_SET) == -1) {
 		printf(VAULT_SEEK_ERR, strerror(errno));
@@ -26,29 +34,48 @@ int writeAtOffset(char* data, off_t offset, int vaultFd) {
 	return 0;
 }
 
-int addDelim(off_t blockOffset, ssize_t blockSize, int vaultFd) {
+/* Add delimiters to block
+ * If block size is smaller than delimiters then fails
+ *
+ * @param vaultBlock - block meta-data (size and offset)
+ * @param vaultFd - file descriptor of vault file - must be open for read/write
+ *
+ * @return 0 for success, -1 for failure
+ */
+int addDelim(VaultBlock vaultBlock, int vaultFd) {
 	// validate block is not too small for both delimiters
-	if (blockSize < strlen(DELIM_START) + strlen(DELIM_END)) {
+	if (vaultBlock.blockSize < strlen(DELIM_START) + strlen(DELIM_END)) {
 		printf(SHORT_BLOCK_ERR);
 		return -1;
 	}
 
-	if ((writeAtOffset(DELIM_START, blockOffset, vaultFd) == -1) ||
-		(writeAtOffset(DELIM_END, blockOffset + blockSize - strlen(DELIM_END), vaultFd) == -1)) {
+	if ((writeAtOffset(DELIM_START, vaultBlock.blockOffset, vaultFd) == -1) ||
+		(writeAtOffset(DELIM_END, vaultBlock.blockOffset +
+				vaultBlock.blockSize - strlen(DELIM_END), vaultFd) == -1)) {
 		printf(ADD_DELIM_ERR);
 		return -1;
 	}
 	return 0;
 }
 
-int wipeDelim(off_t blockOffset, ssize_t blockSize, int vaultFd) {
+/* Overwrite delimiters of block with wipe characters
+ * If block size is smaller than delimiter, does not wipe (to prevent overflows)
+ * and returns success.
+ *
+ * @param vaultBlock - block meta-data (size and offset)
+ * @param vaultFd - file descriptor of vault file - must be open for read/write
+ *
+ * @return 0 for success, -1 for failure
+ */
+int wipeDelim(VaultBlock vaultBlock, int vaultFd) {
 	// validate block is not too small - prevent overflows
-	if (blockSize < strlen(DELIM_WIPE))
+	if (vaultBlock.blockSize < strlen(DELIM_WIPE))
 		return 0;
 
 	// wipe delimiters
-	if ((writeAtOffset(DELIM_WIPE, blockOffset, vaultFd) == -1) ||
-		(writeAtOffset(DELIM_WIPE, blockOffset + blockSize - strlen(DELIM_WIPE), vaultFd) == -1)) {
+	if ((writeAtOffset(DELIM_WIPE, vaultBlock.blockOffset, vaultFd) == -1) ||
+		(writeAtOffset(DELIM_WIPE, vaultBlock.blockOffset +
+				vaultBlock.blockSize - strlen(DELIM_WIPE), vaultFd) == -1)) {
 		printf(WIPE_DELIM_ERR, strerror(errno));
 		return -1;
 	}
@@ -60,9 +87,16 @@ int wipeDelim(off_t blockOffset, ssize_t blockSize, int vaultFd) {
 /* ********** ********** **********     ADD    ********** ********** ********** */
 /* ********** ********** ********** ********** ********** ********** ********** */
 
-/* scan gaps
+/* Find best gap to fit block in according to the following heuristic:
  *   - smallest gap that fits all data if exists
  *   - otherwise largest gap
+ *
+ * @param newBlock - return parameter - will hold the parameters of the
+ * 					 best fitting gap: gap size, gap offset
+ * @param writeSize - size of data to be fitted into block including delimiters
+ * @param catalog - vault meta-data
+ *
+ * @return index of block with best gap before it
  */
 short findGap(VaultBlock *newBlock, ssize_t writeSize, Catalog catalog) {
 	short gapBlockId = -1;
@@ -91,6 +125,15 @@ short findGap(VaultBlock *newBlock, ssize_t writeSize, Catalog catalog) {
 	return gapBlockId;
 }
 
+/* Write block meta-data to catalog (without inserting data into vault).
+ * Shifts blocks in catalog array to make room for block according to index
+ * (blocks are sorted by offset)
+ *
+ * @param newBlock - block meta-data (with size according to gap to be fitted in)
+ * @param gapBlockId - index of block in catalog array (according offset)
+ * @param writeSize - actual size of block data including delimiters
+ * @param catalog - vault meta-data
+ */
 void logBlockToGap(VaultBlock newBlock, short gapBlockId, ssize_t writeSize, Catalog catalog) {
 	if (writeSize < newBlock.blockSize)
 		newBlock.blockSize = writeSize;
@@ -106,7 +149,16 @@ void logBlockToGap(VaultBlock newBlock, short gapBlockId, ssize_t writeSize, Cat
 	catalog->numBlocks++;
 }
 
-int writeBlock(int vaultFd, int fileFd, VaultBlock newBlock) {
+/* Read block data from file and write it to vault.
+ * Add delimiters at start and end of block.
+ *
+ * @param newBlock - block meta-data
+ * @param fileId - file descriptor of file to read block from - must be open for read
+ * @param vaultFd - file descriptor of vault file - must be open for read/write
+ *
+ * @return 0 for success, -1 for failure
+ */
+int writeBlock(VaultBlock newBlock, int vaultFd, int fileFd) {
 	// validate block is large enough for both delimiters
 	if (strlen(DELIM_START) + strlen(DELIM_END) > newBlock.blockSize) {
 		printf(SHORT_BLOCK_ERR);
@@ -127,9 +179,10 @@ int writeBlock(int vaultFd, int fileFd, VaultBlock newBlock) {
 	}
 
 	// write delimiters
-	return addDelim(newBlock.blockOffset, newBlock.blockSize, vaultFd);
+	return addDelim(newBlock, vaultFd);
 }
 
+/* Add file to vault */
 int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalog, char* msg) {
 	// set for rollback
 	*updateCatalog = 0;
@@ -222,13 +275,13 @@ int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalo
 	while (blockNum < VAULT_BLOCK_NUM) {
 		if (fatEntry->blockId[blockNum] != -1) { // check block is not empty
 			VaultBlock newBlock = catalog->blocks[fatEntry->blockId[blockNum]];
-			if (writeBlock(vaultFd, fileFd, newBlock) == -1) {
+			if (writeBlock(newBlock, vaultFd, fileFd) == -1) {
 				// error writing block
 				close(fileFd);
 				// wipe blocks to prevent data corruption
 				for (int i=blockNum; i>=0; i--) {
 					newBlock = catalog->blocks[fatEntry->blockId[i]];
-					if (wipeDelim(newBlock.blockOffset, newBlock.blockSize, vaultFd) == -1)
+					if (wipeDelim(newBlock, vaultFd) == -1)
 						// failed wiping some of the blocks
 						printf(DATA_CORRUPTION_ERR);
 				}
@@ -250,12 +303,15 @@ int addVaultFile(char* filePath, int vaultFd, Catalog catalog, int* updateCatalo
 /* ********** ********** **********   REMOVE   ********** ********** ********** */
 /* ********** ********** ********** ********** ********** ********** ********** */
 
-/*
- * delete block
- * Remove block from block array and shift succeeding blocks left.
- * Fix fat blockIds.
- * Try to wipe delimiters (if fails then vault might be corrupted)
+/* Remove block from vault - lazy remove - wipes delimiters and updates catalog.
+ * Shifts blocks in catalog to leave no gaps in array (only in catalog, not in vault)
  *
+ * @param blockId - index of block to be removed.
+ * 				    if -1 then block not in use so does nothing and returns success
+ * @param vaultFd - file descriptor of vault file - must be open for read/write
+ * @param catalog - vault meta-data
+ *
+ * @return 0 for success, -1 for failure
  */
 int rmBlock(short blockId, int vaultFd, Catalog catalog) {
 	if (blockId == -1) // block not used
@@ -273,9 +329,10 @@ int rmBlock(short blockId, int vaultFd, Catalog catalog) {
 	catalog->numBlocks --;
 
 	// wipe delimiters
-	return wipeDelim(vaultBlock.blockOffset, vaultBlock.blockSize, vaultFd);
+	return wipeDelim(vaultBlock, vaultFd);
 }
 
+/* Remove file from vault by file name (if file in vault) */
 int rmVaultFile(char* fileName, int vaultFd, Catalog catalog, int* updateCatalog, char* msg) {
 	// set for rollback
 	*updateCatalog = 0;
@@ -317,6 +374,17 @@ int rmVaultFile(char* fileName, int vaultFd, Catalog catalog, int* updateCatalog
 /* ********** ********** ********** ********** ********** ********** ********** */
 /* ********** ********** **********   FETCH    ********** ********** ********** */
 /* ********** ********** ********** ********** ********** ********** ********** */
+
+/* Read block from vault and write it to file
+ *
+ * @param blockId - index of block to be removed.
+ * 				    if -1 then block not in use so does nothing and returns success
+ * @param fileId - file descriptor of file to write block to - must be open for write
+ * @param vaultFd - file descriptor of vault file - must be open for read/write
+ * @param catalog - vault meta-data
+ *
+ * @return 0 for success, -1 for failure
+ */
 int readBlock(short blockId, int fileFd, int vaultFd, Catalog catalog) {
 	if (blockId == -1) // block not used
 		return 0;
@@ -331,13 +399,13 @@ int readBlock(short blockId, int fileFd, int vaultFd, Catalog catalog) {
 	return copyData(vaultFd, fileFd, vaultBlock.blockSize - strlen(DELIM_START) - strlen(DELIM_END));
 }
 
+/* Fetch file from vault by file name (if file in vault) */
 int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog, char *msg) {
 
 	// check if filename exists
 	int fatEntryId = getFATEntryId(fileName, catalog);
 	if (fatEntryId < 0) {
 		printf(MISSING_FNAME_ERR);
-		closeVault(vaultFd, catalog, 0);
 		return -1;
 	}
 
@@ -370,6 +438,7 @@ int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog, char *msg) {
 /* ********** ********** **********   DEFRAG   ********** ********** ********** */
 /* ********** ********** ********** ********** ********** ********** ********** */
 
+/* Defragment vault - shift all data blocks to close gaps between them. */
 int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCatalog, char* msg) {
 	// set for rollback
 	*updateCatalog = 0;
@@ -391,7 +460,7 @@ int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCa
 		// close gap
 		if (vaultBlock->blockOffset - prevEndOffset > 0) {
 			// remove delimeters before move
-			if (wipeDelim(vaultBlock->blockOffset, vaultBlock->blockSize, vaultFd) == -1) {
+			if (wipeDelim(*vaultBlock, vaultFd) == -1) {
 				printf(DEFRAG_DELIM_ERR);
 				res = -1;
 			}
@@ -409,7 +478,7 @@ int defragVault(char* vaultFileName, int vaultFd, Catalog catalog, int* updateCa
 			// fix catalog
 			vaultBlock->blockOffset = prevEndOffset;
 			// return delimiters
-			if (res != -1 && addDelim(vaultBlock->blockOffset, vaultBlock->blockSize, vaultFd) == -1) {
+			if (res != -1 && addDelim(*vaultBlock, vaultFd) == -1) {
 				printf(DEFRAG_DELIM_ERR);
 				res = -1;
 			}
