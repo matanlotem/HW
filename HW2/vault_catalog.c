@@ -144,12 +144,12 @@ int listVault(Catalog catalog) {
 			fnameLen = strlen(catalog->fat[i].fileName);
 
 	// format and print
-	char sizeStr[10], dateStr[30];
+	char sizeStr[10];
 	for (int i=0; i<catalog->numFiles; i++) {
 		formatSize(sizeStr, catalog->fat[i].fileSize);
-		strftime(dateStr, 30, "%A %b %d %H:%M:%S %Y", localtime(&(catalog->fat[i].insertionTime)));
-		printf("%-*s%-8s%.4o%32s\n",fnameLen+4, catalog->fat[i].fileName, sizeStr,
-				catalog->fat[i].filePerm & 0777, dateStr);
+		printf("%-*s%-8s%.4o%32s",fnameLen+4, catalog->fat[i].fileName, sizeStr,
+						catalog->fat[i].filePerm & 0777,
+						ctime(&(catalog->fat[i].insertionTime)));
 	}
 
 	return 0;

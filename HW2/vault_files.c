@@ -428,8 +428,14 @@ int fetchVaultFile(char* fileName, int vaultFd, Catalog catalog, char *msg) {
 			return -1;
 		}
 	}
-
 	close(fileFd);
+
+	// fix permissions
+	if (chmod(fileName, catalog->fat[fatEntryId].filePerm) == -1) {
+		printf(FETCH_PERMS_ERR, strerror(errno));
+		return -1;
+	}
+
 	sprintf(msg, FETCH_SUCCESS_MSG, fileName);
 	return 0;
 }

@@ -37,12 +37,16 @@ ssize_t parseSize(char* sizeStr) {
     // get units
     switch (sizeStr[strlen(sizeStr)-1]) {
         case 'G':
+        case 'g':
             psize *= 1024;
         case 'M':
+        case 'm':
             psize *= 1024;
         case 'K':
+        case 'k':
             psize *= 1024;
         case 'B':
+        case 'b':
             break;
         default:
             return 0;

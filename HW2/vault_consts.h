@@ -39,7 +39,7 @@
 #define VAULT_OPEN_ERR "Error opening vault file: %s\n"
 #define CATALOG_READ_ERR "Error reading catalog: %s\n"
 #define VAULT_CREATION_ERR "Error creating vault file: %s\n"
-#define CATALOG_WRITE_ERR "Error writing catalog to vault file: %s\n"
+#define CATALOG_WRITE_ERR "Error writing catalog to vault file: %s\nVault file might be corrupt\n"
 #define VAULT_STRECH_ERR "Error stretching vault file to required size: %s\n"
 #define FILE_OPEN_ERR "Error opening file to add to vault: %s\n"
 #define VAULT_FWRITE_ERR "Error writing file to vault: %s\n"
@@ -61,6 +61,7 @@
 #define MOVE_BLOCK_COPY_ERR "Error moving block while defragmenting\n"
 #define FETCH_CREATE_ERR "Error creating fetched file: %s\n"
 #define FETCH_BLOCK_ERR "Error copying fetched file block\n"
+#define FETCH_PERMS_ERR "Error setting fetched file permissions: %s\n"
 #define DEL_FETCH_FILE_ERR "Error removing file after failed fetch: %s\n"
 
 
