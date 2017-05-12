@@ -54,3 +54,13 @@ HW2/tmpfiles/tmp2.txt
 HW2/tmpfiles/tmp4.txt
 *.vlt
 HW2/vault
+HW2/ex2_302818950.zip
+HW2/tests.zip
+*.cproject
+*.project
+*.prefs
+*.exe
+HW3/Debug/
+
+HW3/counter
+HW3/dispatcher
