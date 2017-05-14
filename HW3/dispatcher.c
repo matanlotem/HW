@@ -12,8 +12,7 @@
 
 #define PIPE_NAME "/tmp/counter_%d"
 #define COUNTER_EXE "./counter"
-#define MIN_M 1
-////#define MIN_M 1024
+#define MAX_NUM_COUNTERS 16
 #define STR_LEN 1025
 
 #define DISPATCHER_USAGE_ERROR "Usage: dispatcher <character> <filename>\n"
@@ -89,8 +88,7 @@ int main (int argc, char** argv) {
 		printf(FILE_NOT_FOUND_ERROR, strerror(errno));
 		return -1;
 	}
-	off_t N = st.st_size;
-	off_t M = sqrt(N);
+	off_t N = st.st_size, pageSize = sysconf(_SC_PAGE_SIZE);
 
 	// register signal handler (code from recitation)
 	struct sigaction new_action;
@@ -102,25 +100,26 @@ int main (int argc, char** argv) {
 		return -1;
 	}
 
-	// for small file run only only counter
-	if (M <= MIN_M) {
-		//TODO: run counter
-		dispatchCounter(argv[1][0], argv[2], 0, N);
-	}
-	// for large file run ~M counters
-	else {
-		off_t offset = 0;
-		while (offset < N) {
-			// prevent overflow of last counter
-			if (N-offset < M)
-				M = N-offset;
+	int numCounters;
+	off_t numPages = N/pageSize + (N%pageSize>0), blockSize;
+	// for small filee run one counter
+	if (numPages <= 2)
+		blockSize = 2 * pageSize;
+	// for medium files run a small number counters
+	if (numPages < MAX_NUM_COUNTERS)
+		blockSize = pageSize;
+	// for large file run MAX_NUM_COUNTERS counters
+	else
+		blockSize = pageSize * (numPages/MAX_NUM_COUNTERS + (numPages%MAX_NUM_COUNTERS>0));
 
-			//TODO: run counter - what happens when fails?
-			if (dispatchCounter(argv[1][0], argv[2], offset, M) == -1) {
-				break;
-			}
+	for (off_t offset=0; offset<N; offset+=blockSize) {
+		 // prevent overflow of last counter
+		if (offset + blockSize > N)
+			blockSize = N-offset;
 
-			offset += M;
+		//TODO: run counter - what happens when fails?
+		if (dispatchCounter(argv[1][0], argv[2], offset, blockSize) == -1) {
+			break;
 		}
 	}
 
