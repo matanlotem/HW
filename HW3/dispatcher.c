@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -10,11 +9,14 @@
 #include <errno.h>
 #include <signal.h>
 
+// dispatcher parameters
+#define MAX_NUM_COUNTERS 16
+#define NUM_RETRIES 3
 #define PIPE_NAME "/tmp/counter_%d"
 #define COUNTER_EXE "./counter"
-#define MAX_NUM_COUNTERS 16
 #define STR_LEN 1025
 
+// output messages
 #define DISPATCHER_USAGE_ERROR "Usage: dispatcher <character> <filename>\n"
 #define FILE_NOT_FOUND_ERROR "Error getting file size: %s\n"
 #define SIG_REGISTER_ERROR "Error registering signal handle: %s\n"
@@ -22,17 +24,27 @@
 #define PIPE_READ_ERROR "Error reading from named pipe: %s\n"
 #define FORK_ERROR "Error creating fork: %s\n"
 #define EXECV_ERROR "Error executing counter: %s\n"
+#define MISSED_SIGNAL_ERROR "Missed some signals, trying again\n"
+#define MISSED_SIGNAL_GIVEUP_ERROR "Missed some signals, giving up\n"
 #define OUTPUT_MSG "The character '%c' appears %lu times in %s\n"
 
 // counter
 off_t totalCounter = 0;
+int numCounters = 0;
+off_t counterOffsets[MAX_NUM_COUNTERS];
+off_t counterLengths[MAX_NUM_COUNTERS];
+int counterPID[MAX_NUM_COUNTERS];
 
 /*
- * handle signals
+ * Handle counter signal (when a counter is ready to return its result)
+ * reads result from named pipe.
  */
 void counterSignalHandler (int signum, siginfo_t* info, void* ptr) {
+	numCounters--;
+
 	char pipeName[STR_LEN];
 	sprintf(pipeName, PIPE_NAME, info->si_pid);
+	////printf("Received signal from %d\n",info->si_pid);
 
 	// open pipe
 	int pipeFd = open(pipeName, O_RDONLY);
@@ -52,7 +64,10 @@ void counterSignalHandler (int signum, siginfo_t* info, void* ptr) {
 	totalCounter += counter;
 }
 
-
+/*
+ * Dispatches a counter on a block of given length and starting offset
+ * returns 0 on success, -1 on failure
+ */
 int dispatchCounter(char character, char* filename, off_t offset, off_t length) {
 	// set arguments for counter
 	char offsetStr[STR_LEN], lengthStr[STR_LEN];
@@ -75,6 +90,55 @@ int dispatchCounter(char character, char* filename, off_t offset, off_t length) 
 	return 0;
 }
 
+/*
+ * Split file into blocks and dispatch to counters.
+ * returns 0 on success
+ *        -1 for some general error
+ *        -2 if missed some signals
+ */
+int dispatchAllCounters(char character, char* filename, off_t N) {
+	int res = 0;
+
+	// calculate number of counters to run and number of characters each counter processes
+	int pageSize = sysconf(_SC_PAGE_SIZE);
+	off_t numPages = N/pageSize + (N%pageSize>0), blockSize;
+	if (numPages <= 2) // for small files run one counter
+		blockSize = 2 * pageSize;
+	if (numPages < MAX_NUM_COUNTERS) // for medium files run a small number counters
+		blockSize = pageSize;
+	else // for large files run MAX_NUM_COUNTERS counters
+		blockSize = pageSize * (numPages/MAX_NUM_COUNTERS + (numPages%MAX_NUM_COUNTERS>0));
+
+	// dispatch counters
+	numCounters = 0;
+	totalCounter = 0;
+	for (off_t offset=0; offset<N; offset+=blockSize) {
+		 // prevent overflow of last counter
+		if (offset + blockSize > N)
+			blockSize = N-offset;
+
+		//run counter - if dispatch fails, do not run more counters
+		if (dispatchCounter(character, filename, offset, blockSize) == -1) {
+			res = -1;
+			break;
+		}
+
+		numCounters++;
+	}
+
+	// wait on counters, ignore syscall interrupts
+	while (wait(NULL) != -1 || errno == EINTR);
+	// check all counters sent signals
+	if (res == 0 && numCounters != 0)
+		return -2;
+
+	return res;
+}
+
+/*
+ * Counts number of occurrences of some character (argv[1]) in a file (argv[2])
+ * In case of signal missess tries again several times.
+ */
 int main (int argc, char** argv) {
 	// validate arguments
 	if (argc < 3 || strlen(argv[1]) != 1) {
@@ -88,7 +152,7 @@ int main (int argc, char** argv) {
 		printf(FILE_NOT_FOUND_ERROR, strerror(errno));
 		return -1;
 	}
-	off_t N = st.st_size, pageSize = sysconf(_SC_PAGE_SIZE);
+	off_t N = st.st_size;
 
 	// register signal handler (code from recitation)
 	struct sigaction new_action;
@@ -100,35 +164,26 @@ int main (int argc, char** argv) {
 		return -1;
 	}
 
-	int numCounters;
-	off_t numPages = N/pageSize + (N%pageSize>0), blockSize;
-	// for small filee run one counter
-	if (numPages <= 2)
-		blockSize = 2 * pageSize;
-	// for medium files run a small number counters
-	if (numPages < MAX_NUM_COUNTERS)
-		blockSize = pageSize;
-	// for large file run MAX_NUM_COUNTERS counters
-	else
-		blockSize = pageSize * (numPages/MAX_NUM_COUNTERS + (numPages%MAX_NUM_COUNTERS>0));
-
-	for (off_t offset=0; offset<N; offset+=blockSize) {
-		 // prevent overflow of last counter
-		if (offset + blockSize > N)
-			blockSize = N-offset;
-
-		//TODO: run counter - what happens when fails?
-		if (dispatchCounter(argv[1][0], argv[2], offset, blockSize) == -1) {
+	// try dispatching counters - retried several times if some counter failed returning a signal
+	for (int i=0; i<NUM_RETRIES; i++) {
+		switch (dispatchAllCounters(argv[1][0], argv[2], N)) {
+		case 0: // success - print output
+			printf(OUTPUT_MSG, argv[1][0], totalCounter, argv[2]);
+			return 0;
+			break;
+		case -1: // some general error - exit
+			return -1;
+			break;
+		case -2: // missed some signals - try again
+			if (i<NUM_RETRIES-1)
+				printf(MISSED_SIGNAL_ERROR);
+			else {
+				printf(MISSED_SIGNAL_GIVEUP_ERROR);
+				return -1;
+			}
 			break;
 		}
 	}
-
-	// wait on counters, ignore syscall interrupts
-	int status;
-	while (wait(&status) != -1 || errno == EINTR);
-
-	// print output
-	printf(OUTPUT_MSG, argv[1][0], totalCounter, argv[2]);
 
 	return 0;
 }
