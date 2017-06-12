@@ -6,6 +6,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <pthread.h>
+#include <signal.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -16,6 +17,7 @@
 #define NUM_LISTENERS 10
 #define NUM_CHARS 128
 
+#define SIG_REGISTER_ERROR "Error registering signal handle: %s\n"
 #define SOCKET_CREATE_ERROR "Error creating socket\n"
 #define SOCKET_REUSE_ERROR "Error setting socket reuse\n"
 #define SOCKET_READ_ERROR "Error reading from socket: %s\n"
@@ -23,12 +25,20 @@
 #define BIND_ERROR "Bind failed: %s\n"
 #define LISTEN_ERROR "Listen failed: %s\n"
 #define ACCEPT_ERROR "Accept failed: %s\n"
+#define THREAD_CREATE_ERROR "Thread creation failed\n"
+#define SERVER_UP_MSG "SERVER IS UP\n"
+#define SERVER_DOWN_MSG "SERVER IS DOWN, Waiting for %d threads to finish\n"
 
+#define STATS_COUNTER_MSG "Total bytes read: %lld\n"
+#define STATS_HEADER_MSG "CHAR\tSTATS\n"
+#define STATS_DATA_MSG "%c\t%lld\n"
 
+// global variables
 pthread_mutex_t lock;
-int global_stats[NUM_CHARS] = {0};
+pthread_cond_t counter_cv;
+long long global_stats[NUM_CHARS] = {0};
+long long global_bytes_read = 0;
 int thread_counter = 0;
-int done = 0;
 
 void printConnectionDetails(int connfd) {
 	struct sockaddr_in my_addr, peer_addr;
@@ -83,9 +93,9 @@ int setupListener() {
 }
 
 
-int processConnection(int connfd, int *stats) {
+int processConnection(int connfd, long long *stats) {
 	char buffer[BUFFER_SIZE];
-	int len, bytes_read, total_bytes = 0, printable_bytes = 0;
+	long long len, bytes_read, total_bytes = 0, printable_bytes = 0;
 
 	// send HI to client to say server is ready
 	sprintf(buffer,"HI");
@@ -94,7 +104,7 @@ int processConnection(int connfd, int *stats) {
 		return -1;
 	}
 
-	// get length from client and send ack
+	// get length from client
 	if (read(connfd, buffer, BUFFER_SIZE) > 0)
 		len = atoi(buffer);
 	else {
@@ -112,25 +122,29 @@ int processConnection(int connfd, int *stats) {
 	// read data from client and count printable bytes
 	while (total_bytes < len) {
 		bytes_read = read(connfd, buffer, BUFFER_SIZE);
+		if (bytes_read <= 0) {
+			printf(SOCKET_READ_ERROR, strerror(errno));
+			return -1;
+		}
 		for (int i=0; i < bytes_read; i++) {
 			if (isprint(buffer[i])) {
 				printable_bytes++;
-				stats[buffer[i]]++;
+				stats[(int) buffer[i]]++;
 			}
 		}
 		total_bytes += bytes_read;
 	}
 
 	// write number of printable bytes to client
-	sprintf(buffer,"%d ",printable_bytes);
+	sprintf(buffer,"%lld ",printable_bytes);
 	write(connfd,buffer,strlen(buffer));
-	return 0;
+	return total_bytes;
 }
 
 
 void* handleClient(void *connfd_ptr) {
 	int connfd = *((int*) connfd_ptr);
-	int stats[NUM_CHARS] = {0};
+	long long stats[NUM_CHARS] = {0};
 
 	// raise thread counter
 	pthread_mutex_lock(&lock);
@@ -138,46 +152,86 @@ void* handleClient(void *connfd_ptr) {
 	pthread_mutex_unlock(&lock);
 
 	// process connection
-	printConnectionDetails(connfd);
-	int res = processConnection(connfd, stats);
+	int bytes_read = processConnection(connfd, stats);
 	close(connfd);
 
 	// update global stats
-	if (res != -1) {
+	if (bytes_read >= 0) {
 		pthread_mutex_lock(&lock);
 		for (int i=0; i<NUM_CHARS; i++)
 			global_stats[i] += stats[i];
+		global_bytes_read += bytes_read;
 		pthread_mutex_unlock(&lock);
 	}
 
 	// lower thread counter
 	pthread_mutex_lock(&lock);
 	thread_counter--;
+	pthread_cond_signal(&counter_cv);
 	pthread_mutex_unlock(&lock);
 
 	pthread_exit(NULL);
 }
 
+
+
+void signalHandler() {}
+
+
 int main (int argc, char* argv[]) {
-	pthread_mutex_init(&lock, NULL);
 
-	int listenfd = setupListener(), connfd, rc;
-	pthread_t thread;
-
-	if (listenfd != -1) {
-		while (!done) {
-			connfd = accept(listenfd, NULL, NULL);
-			if(connfd < 0) {
-				printf(ACCEPT_ERROR, strerror(errno));
-				return -1;
-			}
-			else {
-				rc = pthread_create(&thread, NULL, handleClient, (void *) &connfd);
-			}
-		}
+	// register signal handler (code from recitation)
+	struct sigaction new_action;
+	sigemptyset(&new_action.sa_mask);
+	new_action.sa_sigaction = signalHandler;
+	new_action.sa_flags = SA_SIGINFO;
+	if (0 != sigaction(SIGINT, &new_action, NULL)) {
+		printf(SIG_REGISTER_ERROR, strerror(errno));
+		return -1;
 	}
 
+
+	// setup listener
+	int listenfd = setupListener();
+	if (listenfd == -1)
+		return -1;
+	printf(SERVER_UP_MSG);
+
+	// setup locks
+	pthread_mutex_init(&lock, NULL);
+	pthread_cond_init (&counter_cv, NULL);
+
+	// accept loop - breaks on SIGINT or error
+	pthread_t thread;
+	while (1) {
+		// accept
+		int connfd = accept(listenfd, NULL, NULL);
+		if(connfd < 0) {
+			if (errno != 4) // ignore SIGINT
+				printf(ACCEPT_ERROR, strerror(errno));
+			break;
+		}
+		// create thread
+		if (pthread_create(&thread, NULL, handleClient, (void *) &connfd)) {
+			printf(THREAD_CREATE_ERROR);
+			break;
+		}
+	}
 	close(listenfd);
+
+	// wait for all threads to terminate and print output stats
+	pthread_mutex_lock(&lock);
+	printf (SERVER_DOWN_MSG, thread_counter);
+	while (thread_counter > 0)
+		pthread_cond_wait(&counter_cv, &lock);
+	printf(STATS_COUNTER_MSG, global_bytes_read);
+	printf(STATS_HEADER_MSG);
+	for (int i=0; i < NUM_CHARS; i++)
+		if (isprint(i)) printf(STATS_DATA_MSG, i, global_stats[i]);
+	pthread_mutex_unlock(&lock);
+
+	pthread_mutex_destroy(&lock);
+	pthread_cond_destroy(&counter_cv);
 
 	return 0;
 }

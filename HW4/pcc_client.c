@@ -16,6 +16,7 @@
 #define INPUT_FILE "/dev/urandom"
 #define BUFFER_SIZE 1024
 
+#define USAGE_ERROR "Number of bytes to transfer not provided\n"
 #define SOCKET_CREATE_ERROR "Error creating socket\n"
 #define CONNECT_ERROR "Connect Failed: %s\n"
 #define INPUT_OPEN_ERROR "Error opening input file: %s\n"
@@ -123,7 +124,7 @@ int transaction(int len, int inputfd, int sockfd) {
 
 int main (int argc, char* argv[]) {
 	if (argc < 2) {
-		printf("TODO");
+		printf(USAGE_ERROR);
 		return -1;
 	}
 	int len = atoi(argv[1]);
