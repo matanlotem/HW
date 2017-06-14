@@ -7,7 +7,6 @@
 #include <ctype.h>
 #include <pthread.h>
 #include <signal.h>
-
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -17,6 +16,7 @@
 #define NUM_LISTENERS 10
 #define NUM_CHARS 128
 
+// output messages
 #define SIG_REGISTER_ERROR "Error registering signal handle: %s\n"
 #define SOCKET_CREATE_ERROR "Error creating socket\n"
 #define SOCKET_REUSE_ERROR "Error setting socket reuse\n"
@@ -28,7 +28,6 @@
 #define THREAD_CREATE_ERROR "Thread creation failed\n"
 #define SERVER_UP_MSG "SERVER IS UP\n"
 #define SERVER_DOWN_MSG "SERVER IS DOWN, Waiting for %d threads to finish\n"
-
 #define STATS_COUNTER_MSG "Total bytes read: %lld\n"
 #define STATS_HEADER_MSG "CHAR\tSTATS\n"
 #define STATS_DATA_MSG "%c\t%lld\n"
@@ -40,23 +39,9 @@ long long global_stats[NUM_CHARS] = {0};
 long long global_bytes_read = 0;
 int thread_counter = 0;
 
-void printConnectionDetails(int connfd) {
-	struct sockaddr_in my_addr, peer_addr;
-	socklen_t addrsize = sizeof(struct sockaddr_in);
-	getsockname(connfd, (struct sockaddr*) &my_addr,   &addrsize);
-	getpeername(connfd, (struct sockaddr*) &peer_addr, &addrsize);
-	printf("Server: Client connected.\n"
-		   "\t\tClient IP: %s Client Port: %d\n"
-		   "\t\tServer IP: %s Server Port: %d\n",
-		   inet_ntoa( peer_addr.sin_addr ),
-		   ntohs(     peer_addr.sin_port ),
-		   inet_ntoa( my_addr.sin_addr   ),
-		   ntohs(     my_addr.sin_port   ) );
-
-}
-
 
 int setupListener() {
+	// create socket
 	int listenfd = socket(AF_INET, SOCK_STREAM, 0);
 	if (listenfd < 0) {
 		printf(SOCKET_CREATE_ERROR);
@@ -164,23 +149,21 @@ void* handleClient(void *connfd_ptr) {
 		pthread_mutex_unlock(&lock);
 	}
 
-	// lower thread counter
+	// lower thread counter and signal thread is done
 	pthread_mutex_lock(&lock);
 	thread_counter--;
 	pthread_cond_signal(&counter_cv);
 	pthread_mutex_unlock(&lock);
-
 	pthread_exit(NULL);
 }
 
 
-
+// does nothing - signal only breaks loop
 void signalHandler() {}
 
 
 int main (int argc, char* argv[]) {
-
-	// register signal handler (code from recitation)
+	// register signal handler
 	struct sigaction new_action;
 	sigemptyset(&new_action.sa_mask);
 	new_action.sa_sigaction = signalHandler;
@@ -189,7 +172,6 @@ int main (int argc, char* argv[]) {
 		printf(SIG_REGISTER_ERROR, strerror(errno));
 		return -1;
 	}
-
 
 	// setup listener
 	int listenfd = setupListener();
@@ -219,17 +201,19 @@ int main (int argc, char* argv[]) {
 	}
 	close(listenfd);
 
-	// wait for all threads to terminate and print output stats
+	// wait for all threads to terminate and prints output stats
 	pthread_mutex_lock(&lock);
 	printf (SERVER_DOWN_MSG, thread_counter);
-	while (thread_counter > 0)
+	while (thread_counter > 0) // wait
 		pthread_cond_wait(&counter_cv, &lock);
+	// print stats
 	printf(STATS_COUNTER_MSG, global_bytes_read);
 	printf(STATS_HEADER_MSG);
 	for (int i=0; i < NUM_CHARS; i++)
 		if (isprint(i)) printf(STATS_DATA_MSG, i, global_stats[i]);
 	pthread_mutex_unlock(&lock);
 
+	// destroy locks
 	pthread_mutex_destroy(&lock);
 	pthread_cond_destroy(&counter_cv);
 
