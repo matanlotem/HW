@@ -11,11 +11,13 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
+// consts
 #define SERVER_PORT 2233
 #define SERVER_ADDRESS "127.0.0.1"
 #define INPUT_FILE "/dev/urandom"
 #define BUFFER_SIZE 1024
 
+// error messages
 #define USAGE_ERROR "Number of bytes to transfer not provided\n"
 #define SOCKET_CREATE_ERROR "Error creating socket\n"
 #define CONNECT_ERROR "Connect Failed: %s\n"
@@ -23,6 +25,8 @@
 #define INPUT_READ_ERROR "Error reading from input file: %s\n"
 #define SOCKET_READ_ERROR "Error reading from socket: %s\n"
 #define SOCKET_WRITE_ERROR "Error writing to socket: %s\n"
+
+// output messages
 #define OUTPUT_MSG "%lld printable characters out of %lld total characters\n"
 
 

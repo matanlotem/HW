@@ -11,12 +11,13 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+// consts
 #define SERVER_PORT 2233
 #define BUFFER_SIZE 1024
 #define NUM_LISTENERS 10
 #define NUM_CHARS 128
 
-// output messages
+// error messages
 #define SIG_REGISTER_ERROR "Error registering signal handle: %s\n"
 #define SOCKET_CREATE_ERROR "Error creating socket\n"
 #define SOCKET_REUSE_ERROR "Error setting socket reuse\n"
@@ -26,6 +27,9 @@
 #define LISTEN_ERROR "Listen failed: %s\n"
 #define ACCEPT_ERROR "Accept failed: %s\n"
 #define THREAD_CREATE_ERROR "Thread creation failed\n"
+#define ALLOCATION_ERROR "Allocation Error\n"
+
+// output messages
 #define SERVER_UP_MSG "SERVER IS UP\n"
 #define SERVER_DOWN_MSG "SERVER IS DOWN, Waiting for %d threads to finish\n"
 #define STATS_COUNTER_MSG "Total bytes read: %lld\n"
@@ -141,7 +145,10 @@ long long transaction(int connfd, long long *stats) {
 
 	// write number of printable bytes to client
 	sprintf(buffer,"%lld ",printable_bytes);
-	write(connfd,buffer,strlen(buffer));
+	if (write(connfd, buffer, strlen(buffer)) < 0) {
+		printf(SOCKET_WRITE_ERROR, strerror(errno));
+		return -1;
+	}
 	return total_bytes;
 }
 
@@ -153,15 +160,15 @@ long long transaction(int connfd, long long *stats) {
  * On successful transaction with client updates global stats
  */
 void* handleClient(void *connfd_ptr) {
-	int connfd = *((int*) connfd_ptr);
-	long long stats[NUM_CHARS] = {0};
-
 	// raise thread counter
 	pthread_mutex_lock(&lock);
 	thread_counter++;
 	pthread_mutex_unlock(&lock);
 
 	// process connection
+	long long stats[NUM_CHARS] = {0};
+	int connfd = *((int*) connfd_ptr);
+	free(connfd_ptr);
 	long long bytes_read = transaction(connfd, stats);
 	close(connfd);
 
@@ -218,19 +225,31 @@ int main (int argc, char* argv[]) {
 	pthread_mutex_init(&lock, NULL);
 	pthread_cond_init (&counter_cv, NULL);
 
-	// accept loop - breaks on SIGINT or error
+	// accept and create thread loop - breaks on SIGINT or error
 	pthread_t thread;
 	while (1) {
-		// accept
-		int connfd = accept(listenfd, NULL, NULL);
-		if(connfd < 0) {
-			if (errno != 4) // do not print error on SIGINT
-				printf(ACCEPT_ERROR, strerror(errno));
+		// allocate connection file descriptor in order to prevent race condition
+		// between thread connfd read new accept
+		int* connfd_ptr = (int*) malloc(sizeof(int));
+		if (!connfd_ptr) {
+			printf(ALLOCATION_ERROR);
 			break;
 		}
+
+		// accept
+		*connfd_ptr = accept(listenfd, NULL, NULL);
+		if(*connfd_ptr < 0) {
+			if (errno != 4) // do not print error on SIGINT
+				printf(ACCEPT_ERROR, strerror(errno));
+			free(connfd_ptr);
+			break;
+		}
+
 		// create thread
-		if (pthread_create(&thread, NULL, handleClient, (void *) &connfd)) {
+		if (pthread_create(&thread, NULL, handleClient, (void *) connfd_ptr)) {
 			printf(THREAD_CREATE_ERROR);
+			close(*connfd_ptr);
+			free(connfd_ptr);
 			break;
 		}
 	}
