@@ -40,13 +40,18 @@ long long global_bytes_read = 0;
 int thread_counter = 0;
 
 
-int setupListener() {
+/*
+ * Sets up listener socket to bind given port
+ * Returns socket fil descriptor on success, -1 on failure
+ */
+int setupListener(int port) {
 	// create socket
 	int listenfd = socket(AF_INET, SOCK_STREAM, 0);
 	if (listenfd < 0) {
 		printf(SOCKET_CREATE_ERROR);
 		return -1;
 	}
+	// set socket not wait on disconnected ports
 	if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int) ) < 0) {
 		printf(SOCKET_REUSE_ERROR);
 		close(listenfd);
@@ -57,7 +62,7 @@ int setupListener() {
 	struct sockaddr_in serv_addr;
 	memset(&serv_addr, '0', sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_port = htons(SERVER_PORT);
+	serv_addr.sin_port = htons(port);
 	serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
 	// bind
@@ -78,7 +83,20 @@ int setupListener() {
 }
 
 
-int processConnection(int connfd, long long *stats) {
+/*
+ * Process client connection - gets data bytes from client,
+ * counts the number of printable characters and sends it to client,
+ * and saves number of appearances of each printable character
+ * Uses the following protocol:
+ *   SERVER -> CLIENT: 'HI'				lets client know server is ready
+ *   CLIENT -> SERVER: len				so server knows how much to read
+ *   SERVER -> CLIENT: 'THANKS'			prevents data overflowing into len
+ *   CLIENT -> SERVER: data 			in chunks
+ *   SERVER -> CLIENT: num printable
+ * Returns number of printable bytes on success, -1 on failure
+ * Updates stats (number of appearances of each printable character)
+ */
+long long transaction(int connfd, long long *stats) {
 	char buffer[BUFFER_SIZE];
 	long long len, bytes_read, total_bytes = 0, printable_bytes = 0;
 
@@ -91,7 +109,7 @@ int processConnection(int connfd, long long *stats) {
 
 	// get length from client
 	if (read(connfd, buffer, BUFFER_SIZE) > 0)
-		len = atoi(buffer);
+		len = atoll(buffer);
 	else {
 		printf(SOCKET_READ_ERROR, strerror(errno));
 		return -1;
@@ -111,6 +129,7 @@ int processConnection(int connfd, long long *stats) {
 			printf(SOCKET_READ_ERROR, strerror(errno));
 			return -1;
 		}
+		// count printable and update stats
 		for (int i=0; i < bytes_read; i++) {
 			if (isprint(buffer[i])) {
 				printable_bytes++;
@@ -127,6 +146,12 @@ int processConnection(int connfd, long long *stats) {
 }
 
 
+/*
+ * Client handling thread - handles connection and updates stats
+ * On start raises the number of threads counter and when done lowers it
+ * and sends signal to counter conditional variable.
+ * On successful transaction with client updates global stats
+ */
 void* handleClient(void *connfd_ptr) {
 	int connfd = *((int*) connfd_ptr);
 	long long stats[NUM_CHARS] = {0};
@@ -137,7 +162,7 @@ void* handleClient(void *connfd_ptr) {
 	pthread_mutex_unlock(&lock);
 
 	// process connection
-	int bytes_read = processConnection(connfd, stats);
+	long long bytes_read = transaction(connfd, stats);
 	close(connfd);
 
 	// update global stats
@@ -158,10 +183,20 @@ void* handleClient(void *connfd_ptr) {
 }
 
 
-// does nothing - signal only breaks loop
+// does nothing - signal is only used to break loop
 void signalHandler() {}
 
 
+/*
+ * Listens for clients sessions, gets from each client a string and returns
+ * the number of printable characters in it. Keeps statistic of total number
+ * of bytes seen and number of appearances of each printable character.
+ *
+ * For each client session opens a new thread.
+ *
+ * On SIGINT (ctrl+c) stops listening for new clients, waits for all threads
+ * to terminate, and prints statistics
+ */
 int main (int argc, char* argv[]) {
 	// register signal handler
 	struct sigaction new_action;
@@ -174,7 +209,7 @@ int main (int argc, char* argv[]) {
 	}
 
 	// setup listener
-	int listenfd = setupListener();
+	int listenfd = setupListener(SERVER_PORT);
 	if (listenfd == -1)
 		return -1;
 	printf(SERVER_UP_MSG);
@@ -189,7 +224,7 @@ int main (int argc, char* argv[]) {
 		// accept
 		int connfd = accept(listenfd, NULL, NULL);
 		if(connfd < 0) {
-			if (errno != 4) // ignore SIGINT
+			if (errno != 4) // do not print error on SIGINT
 				printf(ACCEPT_ERROR, strerror(errno));
 			break;
 		}
