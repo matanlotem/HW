@@ -13,7 +13,7 @@ MODULE_LICENSE("GPL");
 
 #define SUCCESS 0
 #define DEVICE_RANGE_NAME "message_slot"
-#define BUF_LEN 80
+#define BUF_LEN 120
 #define DEVICE_FILE_NAME "simple_message_slot"
 
 static int major;
@@ -51,6 +51,7 @@ struct file_operations Fops = {
 static int __init message_slot_init(void) {
 	printk("Loading message_slot\n");
 	major = register_chrdev(0, DEVICE_RANGE_NAME, &Fops);
+
 	if (major < 0) {
 		printk(KERN_ALERT " registering device failed: %d\n", major);
 	}
